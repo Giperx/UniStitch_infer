@@ -294,7 +294,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Finetune UniStitch on cam5 pairs")
     parser.add_argument("--dataset", required=True, choices=sorted(TRAIN_SPECS))
     parser.add_argument("--gpu", default="1")
-    parser.add_argument("--batch-size", type=int, default=11, help="largest full step that fits a 24GB 4090")
+    parser.add_argument("--batch-size", type=int, default=8, help="stable batch on a 24GB 4090; 11 OOMs on the next step")
     parser.add_argument("--epochs", type=int, default=None, help="default: nuscenes 1, lyft 3, widedrive3 3")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--lr-gamma", type=float, default=0.97)
