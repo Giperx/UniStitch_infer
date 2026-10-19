@@ -141,7 +141,7 @@ def build_model(net, input1_tensor, input2_tensor, point1_tensor, point2_tensor,
     return out_dict
 
 # for test_output.py
-def build_output_model(net, input1_tensor, input2_tensor, point1_tensor, point2_tensor, descriptor1_tensor, descriptor2_tensor, max_out_height=2000):
+def build_output_model(net, input1_tensor, input2_tensor, point1_tensor, point2_tensor, descriptor1_tensor, descriptor2_tensor, max_out_height=2000, cam5_tensor=None):
     batch_size, _, img_h, img_w = input1_tensor.size()
 
     # input resize
@@ -203,11 +203,18 @@ def build_output_model(net, input1_tensor, input2_tensor, point1_tensor, point2_
 
     # # transformation
     mask = torch.ones_like(input2_tensor).cuda()
-    output_tps_ref = torch_tps_transform.transformer(torch.cat((input1_tensor+1, mask), 1), norm_mesh_trans_ref, norm_rigid_mesh, (out_height.int(), out_width.int()))
-    output_tps_tgt = torch_tps_transform.transformer(torch.cat((input2_tensor+1, mask), 1), norm_mesh_trans_tgt, norm_rigid_mesh, (out_height.int(), out_width.int()))
+    out_size = (out_height.int(), out_width.int())
+    output_tps_ref = torch_tps_transform.transformer(torch.cat((input1_tensor+1, mask), 1), norm_mesh_trans_ref, norm_rigid_mesh, out_size)
+    output_tps_tgt = torch_tps_transform.transformer(torch.cat((input2_tensor+1, mask), 1), norm_mesh_trans_tgt, norm_rigid_mesh, out_size)
+    # cam5 rides the reference mesh. None means the whole reference is cam5.
+    if cam5_tensor is None:
+        cam5_tensor = torch.ones((batch_size, 1, img_h, img_w), device=input1_tensor.device, dtype=input1_tensor.dtype)
+    else:
+        cam5_tensor = cam5_tensor.to(device=input1_tensor.device, dtype=input1_tensor.dtype)
+    output_cam5 = torch_tps_transform.transformer(cam5_tensor, norm_mesh_trans_ref, norm_rigid_mesh, out_size)
 
     out_dict = {}
-    out_dict.update(output_tps_ref=output_tps_ref, output_tps_tgt = output_tps_tgt)
+    out_dict.update(output_tps_ref=output_tps_ref, output_tps_tgt = output_tps_tgt, output_cam5=output_cam5)
     #out_dict.update(output_H_ref=output_H_ref, output_H_tgt = output_H_tgt)
 
     return out_dict, True
@@ -455,7 +462,8 @@ class Network(nn.Module):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
 
-        resnet18_model = models.resnet.resnet18(weights="DEFAULT")
+        # Inference loads these weights from the UniStitch checkpoint.
+        resnet18_model = models.resnet.resnet18(weights=None)
         if torch.cuda.is_available():
             resnet18_model = resnet18_model.cuda()
         self.feature_extractor_stage1, self.feature_extractor_stage2 = get_res18_FeatureMap(resnet18_model)
