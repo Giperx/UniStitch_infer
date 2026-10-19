@@ -30,7 +30,7 @@ def run_stage(stage, args, weight):
         "--epochs",
         str(args.epochs),
         "--batch-size",
-        str(args.batch_size),
+        str(args.stage1_batch if stage == "stage1" else args.stage2_batch),
         "--workers",
         str(args.workers),
         "--weight",
@@ -50,7 +50,8 @@ def main():
     parser.add_argument("--gpu", default="1")
     parser.add_argument("--stage", choices=("both", "stage1", "stage2"), default="both")
     parser.add_argument("--epochs", type=int, required=True)
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--stage1-batch", type=int, default=4, help="stage 1 trains every weight; 8 OOMs on a 24GB 4090")
+    parser.add_argument("--stage2-batch", type=int, default=8)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--weight", default=str(RELEASED))
     parser.add_argument("--save-dir", default=str(ROOT / "outputs" / "finetune"))
