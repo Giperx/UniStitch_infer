@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Finetune UniStitch on driving pairs, using the released stage-2 recipe.
+"""Finetune UniStitch on driving pairs in two stages.
+
+Stage 1 trains every weight with the robustifier off. Stage 2 freezes the
+point backbone and both ResNet extractors, then trains with the robustifier.
 
 Each sample is two images only: cam5+cam4 or cam5+cam3. Train scenes and
 frames are shuffled every epoch. The released checkpoint is loaded, the point
@@ -201,12 +204,12 @@ def train(args):
     )
     if len(loader) == 0:
         raise SystemExit("batch size is larger than the pair set")
-    net = load_net(args.weight, freeze=not args.unfreeze)
+    net = load_net(args.weight, freeze=args.stage == "stage2" and not args.unfreeze)
     net.train()
     params = [param for param in net.parameters() if param.requires_grad]
     optimizer = optim.AdamW(params, lr=args.lr, betas=(0.9, 0.999), eps=1e-8)
     scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.lr_gamma)
-    save_dir = Path(args.save_dir) / args.dataset
+    save_dir = Path(args.save_dir) / args.dataset / args.stage
     save_dir.mkdir(parents=True, exist_ok=True)
     start_epoch = 0
     glob_iter = 0
@@ -239,7 +242,14 @@ def train(args):
             ]
             optimizer.zero_grad(set_to_none=True)
             out = build_model(
-                net, images1, images2, points1, points2, desc1, desc2, is_stage2=True
+                net,
+                images1,
+                images2,
+                points1,
+                points2,
+                desc1,
+                desc2,
+                is_stage2=args.stage == "stage2",
             )
             overlap = cal_lp_loss(
                 out["output_H_ref"], out["output_H_tgt"], out["output_tps_ref"], out["output_tps_tgt"]
@@ -293,6 +303,7 @@ def train(args):
 def parse_args():
     parser = argparse.ArgumentParser(description="Finetune UniStitch on cam5 pairs")
     parser.add_argument("--dataset", required=True, choices=sorted(TRAIN_SPECS))
+    parser.add_argument("--stage", choices=("stage1", "stage2"), default="stage2")
     parser.add_argument("--gpu", default="1")
     parser.add_argument("--batch-size", type=int, default=8, help="stable batch on a 24GB 4090; 11 OOMs on the next step")
     parser.add_argument("--epochs", type=int, default=None, help="default: nuscenes 1, lyft 3, widedrive3 3")
