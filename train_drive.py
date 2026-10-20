@@ -110,12 +110,17 @@ def resolve_scene(roots, name):
     return None
 
 
+def camera_size(dataset):
+    """Initial camera size, matching the compared model. Width, height."""
+    return (518, 434) if "1224" in dataset else (518, 294)
+
+
 class DrivingPairDataset(Dataset):
     """One item is cam5 plus either cam4 or cam3, from the train scenes."""
 
     def __init__(self, dataset, size=512):
         spec = TRAIN_SPECS[dataset]
-        self.size = size
+        self.size = camera_size(dataset)
         self.pairs = []
         missing = 0
         for name in scene_names(spec):
@@ -147,8 +152,8 @@ class DrivingPairDataset(Dataset):
         scene, frame, side = self.pairs[index]
         image1, _ = load_cam(scene, frame, 5)
         image2, _ = load_cam(scene, frame, side)
-        image1 = cv2.resize(image1, (self.size, self.size), interpolation=cv2.INTER_AREA)
-        image2 = cv2.resize(image2, (self.size, self.size), interpolation=cv2.INTER_AREA)
+        image1 = cv2.resize(image1, self.size, interpolation=cv2.INTER_AREA)
+        image2 = cv2.resize(image2, self.size, interpolation=cv2.INTER_AREA)
         pts1, pts2, des1, des2 = sift_pair(image1, image2)
         tensor1, point1, desc1 = self._pack(image1, pts1, des1)
         tensor2, point2, desc2 = self._pack(image2, pts2, des2)
@@ -164,8 +169,8 @@ class DrivingPairDataset(Dataset):
         tensor = torch.from_numpy(np.ascontiguousarray(norm.transpose(2, 0, 1)))
         pts, des = pad_points(points, desc)
         pts = pts.clone()
-        pts[:, 0] /= max(self.size - 1, 1)
-        pts[:, 1] /= max(self.size - 1, 1)
+        pts[:, 0] /= max(self.size[0] - 1, 1)
+        pts[:, 1] /= max(self.size[1] - 1, 1)
         return tensor, pts, des
 
 

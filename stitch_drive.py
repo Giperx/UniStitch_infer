@@ -35,7 +35,8 @@ sys.path.insert(0, str(ROOT / "Codes"))
 
 from network import Network, build_output_model  # noqa: E402
 
-WORK = Path("/home/test/LIVA/XZP/FeedForward/work2/0923_synGithub")
+_LEGACY_WORK = Path("/home/test/LIVA/XZP/FeedForward/work2/0923_synGithub")
+WORK = _LEGACY_WORK if (_LEGACY_WORK / "datasets").exists() else ROOT.parent
 DATASETS = {
     "nuscenes": WORK / "datasets/nuscenes/processed_10Hz_v2",
     "lyft1920": WORK / "datasets/lyft/lyft_val1920_3cams",
@@ -389,8 +390,13 @@ def load_net(gpu):
 def stitch_pair(net, image1, image2, max_height, cam5_mask=None, max_out_height=6000, strict=False):
     if image1.shape[:2] != image2.shape[:2]:
         image2 = cv2.resize(image2, (image1.shape[1], image1.shape[0]), interpolation=cv2.INTER_AREA)
-    image1 = resize_height(image1, min(max_height, image1.shape[0]))
-    image2 = resize_height(image2, image1.shape[0])
+    target = getattr(stitch_pair, "input_size", None)
+    if target:
+        image1 = cv2.resize(image1, target, interpolation=cv2.INTER_AREA)
+        image2 = cv2.resize(image2, target, interpolation=cv2.INTER_AREA)
+    else:
+        image1 = resize_height(image1, min(max_height, image1.shape[0]))
+        image2 = resize_height(image2, image1.shape[0])
     if image2.shape[1] != image1.shape[1]:
         image2 = cv2.resize(image2, (image1.shape[1], image1.shape[0]), interpolation=cv2.INTER_AREA)
     if cam5_mask is not None:
@@ -554,7 +560,12 @@ def outputs_ready(out_dir, frame):
     ).is_file()
 
 
+def camera_size(dataset):
+    return (518, 434) if "1224" in dataset else (518, 294)
+
+
 def run_metric(args):
+    stitch_pair.input_size = camera_size(args.dataset)
     spec = gt_spec(args.dataset)
     gt_w, gt_h = spec["size"]
     if args.gt_width is not None:
@@ -631,6 +642,7 @@ def run_metric(args):
 
 def main():
     args = parse_args()
+    stitch_pair.input_size = camera_size(args.dataset)
     if args.metric:
         run_metric(args)
         return
