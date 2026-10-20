@@ -36,20 +36,34 @@ SPECS = {
         "pred": os.path.join(ROOT, "outputs/widedrive3"),
         "gt": os.path.join(WORK, "WideDrive_processed/sparseWideFOVImages3_1554x294"),
         "cam": 2,
+        "direct": True,
     },
 }
+
+
+def _lpips(render, gt):
+    import torch
+    import lpips
+    if not hasattr(_lpips, "model"):
+        _lpips.model = lpips.LPIPS(net="alex").cuda().eval()
+    tensor = lambda image: torch.from_numpy(image.transpose(2, 0, 1)).float().unsqueeze(0).cuda() * 2 - 1
+    with torch.no_grad():
+        return float(_lpips.model(tensor(render), tensor(gt)))
 
 
 def mean_rows(rows):
     if not rows:
         return None
-    return {
+    stats = {
         "hm_psnr": float(np.mean([row["hm_psnr"] for row in rows if np.isfinite(row["hm_psnr"])])),
         "hm_ssim": float(np.mean([row["hm_ssim"] for row in rows])),
         "hm_mae": float(np.mean([row["hm_mae"] for row in rows])),
         "hm_rmse": float(np.mean([row["hm_rmse"] for row in rows])),
         "n": len(rows),
     }
+    if "lpips" in rows[0]:
+        stats["lpips"] = float(np.mean([row["lpips"] for row in rows]))
+    return stats
 
 
 def mean_of(stats):
@@ -64,6 +78,8 @@ def format_stats(stats, frames=True):
     )
     if frames and "n" in stats:
         text += f", Frames: {stats['n']}"
+    if "lpips" in stats:
+        text += f", LPIPS: {stats['lpips']:.4f}"
     return text
 
 
@@ -98,14 +114,19 @@ def score_spec(spec):
             gt = np.array(Image.open(gt_path).convert("RGB")).astype(np.float64) / 255.0
             mask = np.array(Image.open(mask_path).convert("L")) > 127
             gt, mask = match_gt(render, gt, mask)
-            row = frame_hm(render, gt, mask)
+            direct = spec.get("direct")
+            if direct:
+                mask = np.ones(render.shape[:2], dtype=bool)
+            row = frame_hm(render, gt, mask, match=not direct)
+            if direct and row is not None:
+                row["lpips"] = _lpips(render, gt)
             if row is None:
                 skipped += 1
                 continue
             scene_full.append(row)
             slices = region_slices(render.shape[1])
             for region, (x0, x1) in slices.items():
-                region_row = frame_hm(render[:, x0:x1], gt[:, x0:x1], mask[:, x0:x1])
+                region_row = frame_hm(render[:, x0:x1], gt[:, x0:x1], mask[:, x0:x1], match=not spec.get("direct"))
                 if region_row is not None:
                     scene_regions[region].append(region_row)
         if scene_full:
