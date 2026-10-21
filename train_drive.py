@@ -36,7 +36,7 @@ import torch
 import torch.multiprocessing as mp
 import torch.optim as optim
 from torch.nn.utils import clip_grad_norm_
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "Codes"))
@@ -137,7 +137,8 @@ class DrivingPairDataset(Dataset):
                 for side in SIDE_CAMS:
                     side_path = image_dir / f"{frame}_{side}.jpg"
                     if side_path.is_file():
-                        self.pairs.append((scene, frame, side))
+                        size = (518, 434) if "1224" in str(scene) else (518, 294)
+                        self.pairs.append((scene, frame, side, size))
         if not self.pairs:
             raise SystemExit(f"no cam5/cam4 or cam5/cam3 pairs for {dataset}")
         print(
@@ -149,28 +150,29 @@ class DrivingPairDataset(Dataset):
         return len(self.pairs)
 
     def __getitem__(self, index):
-        scene, frame, side = self.pairs[index]
+        scene, frame, side, size = self.pairs[index]
         image1, _ = load_cam(scene, frame, 5)
         image2, _ = load_cam(scene, frame, side)
-        image1 = cv2.resize(image1, self.size, interpolation=cv2.INTER_AREA)
-        image2 = cv2.resize(image2, self.size, interpolation=cv2.INTER_AREA)
+        image1 = cv2.resize(cv2.resize(image1, size, interpolation=cv2.INTER_AREA), (512, 512), interpolation=cv2.INTER_AREA)
+        image2 = cv2.resize(cv2.resize(image2, size, interpolation=cv2.INTER_AREA), (512, 512), interpolation=cv2.INTER_AREA)
+        size = (512, 512)
         pts1, pts2, des1, des2 = sift_pair(image1, image2)
-        tensor1, point1, desc1 = self._pack(image1, pts1, des1)
-        tensor2, point2, desc2 = self._pack(image2, pts2, des2)
+        tensor1, point1, desc1 = self._pack(image1, pts1, des1, size)
+        tensor2, point2, desc2 = self._pack(image2, pts2, des2, size)
         if random.randint(0, 1) == 1:
             tensor1, tensor2 = tensor2, tensor1
             point1, point2 = point2, point1
             desc1, desc2 = desc2, desc1
         return tensor1, tensor2, point1, point2, desc1, desc2
 
-    def _pack(self, image, points, desc):
+    def _pack(self, image, points, desc, size):
         norm = image.astype(np.float32)
         norm = (norm / 127.5) - 1.0
         tensor = torch.from_numpy(np.ascontiguousarray(norm.transpose(2, 0, 1)))
         pts, des = pad_points(points, desc)
         pts = pts.clone()
-        pts[:, 0] /= max(self.size[0] - 1, 1)
-        pts[:, 1] /= max(self.size[1] - 1, 1)
+        pts[:, 0] /= max(size[0] - 1, 1)
+        pts[:, 1] /= max(size[1] - 1, 1)
         return tensor, pts, des
 
 
@@ -190,6 +192,32 @@ def load_net(weight, freeze):
     return net
 
 
+class SameSizeBatches(Sampler):
+    def __init__(self, sizes, batch_size, seed=0):
+        self.sizes = list(sizes)
+        self.batch_size = batch_size
+        self.seed = seed
+
+    def __iter__(self):
+        groups = {}
+        for index, size in enumerate(self.sizes):
+            groups.setdefault(size, []).append(index)
+        rng = random.Random(self.seed)
+        batches = []
+        for indexes in groups.values():
+            rng.shuffle(indexes)
+            for start in range(0, len(indexes) - self.batch_size + 1, self.batch_size):
+                batches.append(indexes[start:start + self.batch_size])
+        rng.shuffle(batches)
+        return iter(batches)
+
+    def __len__(self):
+        groups = {}
+        for size in self.sizes:
+            groups[size] = groups.get(size, 0) + 1
+        return sum(count // self.batch_size for count in groups.values())
+
+
 def train(args):
     try:
         mp.set_start_method("spawn")
@@ -199,14 +227,23 @@ def train(args):
     random.seed(args.seed)
     np.random.seed(args.seed)
     data = DrivingPairDataset(args.dataset, size=args.size)
-    loader = DataLoader(
-        data,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.workers,
-        drop_last=True,
-        pin_memory=True,
-    )
+    sizes = [pair[3] for pair in data.pairs]
+    if len(set(sizes)) > 1:
+        loader = DataLoader(
+            data,
+            batch_sampler=SameSizeBatches(sizes, args.batch_size, args.seed),
+            num_workers=args.workers,
+            pin_memory=True,
+        )
+    else:
+        loader = DataLoader(
+            data,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.workers,
+            drop_last=True,
+            pin_memory=True,
+        )
     if len(loader) == 0:
         raise SystemExit("batch size is larger than the pair set")
     net = load_net(args.weight, freeze=args.stage == "stage2" and not args.unfreeze)
