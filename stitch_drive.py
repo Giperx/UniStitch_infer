@@ -23,6 +23,8 @@ Examples:
 """
 import argparse
 import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -304,6 +306,56 @@ def translation(base, other, mask_base, mask_other):
     return float(shift[0]), float(shift[1]), int(inliers.sum())
 
 
+class MethodMemoryError(RuntimeError):
+    """The stitch itself needs more memory than the GPU, with nobody else using it."""
+
+
+def is_oom(exc):
+    return "out of memory" in str(exc).lower()
+
+
+def other_process_holds_gpu(exc=None, minimum_mib=1024):
+    me = os.getpid()
+    if exc is not None:
+        for pid, amount, unit in re.findall(r"Process (\d+) has ([0-9.]+) ([MG]iB)", str(exc)):
+            if int(pid) == me:
+                continue
+            mib = float(amount) * (1024 if unit.startswith("G") else 1)
+            if mib >= minimum_mib:
+                return True
+    gpu = os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0].strip() or "0"
+    try:
+        text = subprocess.check_output(
+            ["nvidia-smi", f"--id={gpu}", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
+            text=True, timeout=5, stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    for line in text.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 2:
+            continue
+        try:
+            pid, used = int(parts[0]), float(parts[1])
+        except ValueError:
+            continue
+        if pid != me and used >= minimum_mib:
+            return True
+    return False
+
+
+def oom_kind(exc):
+    if not is_oom(exc):
+        return None
+    return "contention" if other_process_holds_gpu(exc) else "method"
+
+
+def reference_on_white(reference):
+    image = reference.copy()
+    valid = np.ones(reference.shape[:2], dtype=bool)
+    return image, valid, valid.copy(), False
+
+
 def place_layer(canvas_h, canvas_w, image, mask, origin):
     color = np.zeros((canvas_h, canvas_w, 3), np.float32)
     weight = np.zeros((canvas_h, canvas_w), np.float32)
@@ -319,7 +371,11 @@ def place_layer(canvas_h, canvas_w, image, mask, origin):
     sub_mask = mask[iy0:iy1, ix0:ix1].astype(np.uint8)
     if sub_mask.max() == 0:
         return color, weight
-    dist = cv2.distanceTransform(sub_mask, cv2.DIST_L2, 5).astype(np.float32) ** 2
+    dist = cv2.distanceTransform(sub_mask, cv2.DIST_L2, 5).astype(np.float32)
+    if sub_mask.min() == 1 or not np.isfinite(dist).all():
+        dist = np.ones(sub_mask.shape, np.float32)
+    else:
+        dist = np.square(np.minimum(dist, 64.0))
     color[y0:y1, x0:x1] = image[iy0:iy1, ix0:ix1].astype(np.float32) * dist[..., None]
     weight[y0:y1, x0:x1] = dist
     return color, weight
@@ -364,7 +420,9 @@ def compose_panoramas(base, mask_base, cam5_base, other, mask_other, cam5_other)
     weight = weight_base + weight_other
     valid = weight > 0
     fused = np.full((canvas_h, canvas_w, 3), 255, np.float32)
-    fused[valid] = (color_base[valid] + color_other[valid]) / weight[valid, None]
+    blended = (color_base[valid] + color_other[valid]) / np.maximum(weight[valid, None], 1e-6)
+    finite = np.isfinite(blended).all(axis=1)
+    fused[valid] = np.where(finite[:, None], blended, 255)
     fused = np.clip(fused, 0, 255).astype(np.uint8)
     cam5 = paste_mask(canvas_h, canvas_w, cam5_base, origin_base) | paste_mask(
         canvas_h, canvas_w, cam5_other, origin_other
@@ -410,10 +468,20 @@ def stitch_pair(net, image1, image2, max_height, cam5_mask=None, max_out_height=
         cam5_t = torch.from_numpy(np.ascontiguousarray(cam5_mask.astype(np.float32))).view(
             1, 1, cam5_mask.shape[0], cam5_mask.shape[1]
         )
-    batch, ok = build_output_model(
-        net, t1.cuda(), t2.cuda(), p1.cuda(), p2.cuda(), d1.cuda(), d2.cuda(),
-        max_out_height=max_out_height, cam5_tensor=None if cam5_t is None else cam5_t.cuda(),
-    )
+    try:
+        batch, ok = build_output_model(
+            net, t1.cuda(), t2.cuda(), p1.cuda(), p2.cuda(), d1.cuda(), d2.cuda(),
+            max_out_height=max_out_height, cam5_tensor=None if cam5_t is None else cam5_t.cuda(),
+        )
+    except RuntimeError as exc:
+        torch.cuda.empty_cache()
+        kind = oom_kind(exc)
+        if kind == "contention":
+            print("  warp skipped because another process holds the GPU; keeping camera 5 on white", flush=True)
+            return reference_on_white(image1)
+        if kind == "method":
+            raise MethodMemoryError(str(exc)) from exc
+        raise
     if not ok or batch is None:
         if strict:
             raise RuntimeError(f"warp canvas is larger than {max_out_height}")
@@ -476,6 +544,15 @@ def montage(cam3, cam4, cam5, step1, final):
 
 
 def stitch_frame(net, dataset, scene, frame, save_root, max_height):
+    try:
+        return _stitch_frame(net, dataset, scene, frame, save_root, max_height)
+    except MethodMemoryError as exc:
+        print(f"  fail frame {frame_token(frame)}: method exceeds GPU memory, nothing saved ({exc})", flush=True)
+        torch.cuda.empty_cache()
+        return None
+
+
+def _stitch_frame(net, dataset, scene, frame, save_root, max_height):
     cam5, p5 = load_cam(scene, frame, 5)
     cam4, p4 = load_cam(scene, frame, 4)
     cam3, p3 = load_cam(scene, frame, 3)
