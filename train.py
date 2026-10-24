@@ -58,17 +58,14 @@ def main():
     parser.add_argument("--max-steps", type=int, default=0)
     args = parser.parse_args()
 
-    names = ("lyft1920", "lyft1224") if args.dataset == "lyft" else (args.dataset,)
-    for name in names:
-        args.dataset = name
-        stage1_last = Path(args.save_dir) / name / "stage1" / "latest.pth"
-        if args.stage in ("both", "stage1"):
-            run_stage("stage1", args, args.weight)
-        if args.stage in ("both", "stage2"):
-            weight = str(stage1_last if stage1_last.is_file() else args.weight)
-            if not stage1_last.is_file():
-                print(f"no stage-1 checkpoint, stage 2 starts from {weight}", flush=True)
-            run_stage("stage2", args, weight)
+    stage1_last = Path(args.save_dir) / args.dataset / "stage1" / "latest.pth"
+    if args.stage in ("both", "stage1"):
+        run_stage("stage1", args, args.weight)
+    if args.stage in ("both", "stage2"):
+        weight = str(stage1_last if stage1_last.is_file() else args.weight)
+        if not stage1_last.is_file():
+            print(f"no stage-1 checkpoint, stage 2 starts from {weight}", flush=True)
+        run_stage("stage2", args, weight)
 
 
 if __name__ == "__main__":

@@ -218,6 +218,35 @@ class SameSizeBatches(Sampler):
         return sum(count // self.batch_size for count in groups.values())
 
 
+def stable_step(optimizer, parameters, max_growth=3.0):
+    params = [p for p in parameters if p.requires_grad]
+    for p in params:
+        if p.grad is not None and not torch.isfinite(p.grad).all():
+            optimizer.zero_grad(set_to_none=True)
+            return "nonfinite grad"
+    with torch.no_grad():
+        before = torch.zeros((), device=params[0].device)
+        saved = [p.detach().clone() for p in params]
+        for p in params:
+            before = before + p.detach().float().pow(2).sum()
+        before = torch.sqrt(before)
+    optimizer.step()
+    with torch.no_grad():
+        bad = any(not torch.isfinite(p).all() for p in params)
+        after = torch.zeros((), device=params[0].device)
+        if not bad:
+            for p in params:
+                after = after + p.detach().float().pow(2).sum()
+            after = torch.sqrt(after)
+            bad = float(before) > 0 and float(after) > max_growth * float(before)
+        if bad:
+            for p, old in zip(params, saved):
+                p.copy_(old)
+            optimizer.zero_grad(set_to_none=True)
+            return "weight x{:.1f}".format(float(after) / max(float(before), 1e-12))
+    return ""
+
+
 def train(args):
     try:
         mp.set_start_method("spawn")
@@ -303,9 +332,16 @@ def train(args):
                 + intra_grid_loss(out["mesh_tgt"])
             )
             total = overlap + mesh + out["df_loss"]
+            if not torch.isfinite(total):
+                print(f"skip step {step + 1}: nonfinite loss", flush=True)
+                optimizer.zero_grad(set_to_none=True)
+                continue
             total.backward()
             clip_grad_norm_(params, max_norm=3, norm_type=2)
-            optimizer.step()
+            reason = stable_step(optimizer, params)
+            if reason:
+                print(f"skip step {step + 1}: {reason}", flush=True)
+                continue
             loss_sum += float(total.item())
             overlap_sum += float(overlap.item())
             mesh_sum += float(mesh.item())
