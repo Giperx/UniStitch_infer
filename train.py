@@ -3,7 +3,7 @@
 
 Stage 1 trains every weight with the robustifier off. Stage 2 loads that
 checkpoint, freezes the alignment backbone, and trains with the robustifier.
-Each stage uses the driving epoch count: nuscenes 1, lyft 3, widedrive3 3.
+Each stage finetunes one epoch. nuScenes stops after 10000 steps.
 
     python train.py --dataset widedrive3 --gpu 5 --epochs 3
 """
@@ -57,6 +57,8 @@ def main():
     parser.add_argument("--save-dir", default=str(ROOT / "outputs" / "finetune"))
     parser.add_argument("--max-steps", type=int, default=0)
     args = parser.parse_args()
+    if args.dataset == "nuscenes" and args.max_steps <= 0:
+        args.max_steps = 10000
 
     stage1_last = Path(args.save_dir) / args.dataset / "stage1" / "latest.pth"
     if args.stage in ("both", "stage1"):
