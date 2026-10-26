@@ -558,10 +558,9 @@ def _stitch_frame(net, dataset, scene, frame, save_root, max_height):
     cam3, p3 = load_cam(scene, frame, 3)
     print(f"{dataset} {scene.name} frame {frame_token(frame)}")
     print(f"  inputs {p5.name} {p4.name} {p3.name} {cam5.shape[1]}x{cam5.shape[0]}")
-    height = min(max_height, cam5.shape[0])
-    cam5_s = resize_height(cam5, height)
-    cam4_s = resize_height(cam4, height)
-    cam3_s = resize_height(cam3, height)
+    size = camera_size(dataset)
+    cam5_s, cam4_s, cam3_s = [resize_to(image, size[0], size[1]) for image in (cam5, cam4, cam3)]
+    height = size[1]
     print("  stitch cam5 + cam4")
     step1, mask1, cam5_1, ok1 = stitch_pair(net, cam5_s, cam4_s, height)
     print("  stitch cam5 + cam3")
