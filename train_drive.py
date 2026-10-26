@@ -56,12 +56,12 @@ TRAIN_SPECS = {
     "lyft1920": {
         "roots": [WORK / "datasets/lyft/lyft_train1920_3cams"],
         "list": None,
-        "epochs": 3,
+        "epochs": 1,
     },
     "lyft1224": {
         "roots": [WORK / "datasets/lyft/lyft_train1224_3cams"],
         "list": None,
-        "epochs": 3,
+        "epochs": 1,
     },
     "lyft": {
         "roots": [
@@ -69,12 +69,12 @@ TRAIN_SPECS = {
             WORK / "datasets/lyft/lyft_train1224_3cams",
         ],
         "list": None,
-        "epochs": 3,
+        "epochs": 1,
     },
     "widedrive3": {
         "roots": [WORK / "datasets/WideDrive3_processed/WideDriveTrain"],
         "list": WORK / "datasets/WideDrive3_processed/WideDriveTrain/train.txt",
-        "epochs": 3,
+        "epochs": 1,
     },
 }
 SIDE_CAMS = (4, 3)
@@ -332,8 +332,8 @@ def train(args):
                 + intra_grid_loss(out["mesh_tgt"])
             )
             total = overlap + mesh + out["df_loss"]
-            if not torch.isfinite(total):
-                print(f"skip step {step + 1}: nonfinite loss", flush=True)
+            if (not torch.isfinite(total)) or float(total) > 10:
+                print(f"skip step {step + 1}: loss {float(total)}", flush=True)
                 optimizer.zero_grad(set_to_none=True)
                 continue
             total.backward()
@@ -385,7 +385,7 @@ def parse_args():
     parser.add_argument("--gpu", default="1")
     parser.add_argument("--batch-size", type=int, default=8, help="stable batch on a 24GB 4090; 11 OOMs on the next step")
     parser.add_argument("--epochs", type=int, default=None, help="default: nuscenes 1, lyft 3, widedrive3 3")
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--lr-gamma", type=float, default=0.97)
     parser.add_argument("--size", type=int, default=512)
     parser.add_argument("--workers", type=int, default=4)
